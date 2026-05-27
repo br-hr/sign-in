@@ -144,6 +144,111 @@
     }
 
     // ========================================================================
+    // STORAGE RELAY
+    // ========================================================================
+    // The Apps Script web app runs in a googleusercontent.com sandbox whose
+    // subdomain rotates periodically. localStorage is scoped to origin, so the
+    // user's session token disappears whenever the subdomain changes.
+    //
+    // This page lives at a stable GitHub Pages origin. By embedding it in the
+    // parent and using postMessage, we can read/write a session token at this
+    // stable origin so it survives subdomain rotation.
+    //
+    // Protocol (all messages namespaced with "hr-portal:"):
+    //   Parent → here:  { type: 'hr-portal:get-token', requestId }
+    //   Here → parent:  { type: 'hr-portal:token-response', requestId, token, expiresAt }
+    //   Parent → here:  { type: 'hr-portal:set-token', requestId, token, expiresAt }
+    //   Here → parent:  { type: 'hr-portal:set-token-ack', requestId, ok }
+    //   Parent → here:  { type: 'hr-portal:clear-token', requestId }
+    //   Here → parent:  { type: 'hr-portal:clear-token-ack', requestId, ok }
+    //
+    // Security: we only respond to messages from the parent window (we don't
+    // serve other embedders), and we send responses back to event.source with
+    // event.origin as the target so the response can't be intercepted.
+
+    const STORAGE_KEY = 'hr-portal-session-token';
+    const STORAGE_EXPIRY_KEY = 'hr-portal-session-expires';
+
+    function readStoredToken() {
+      try {
+        const token = localStorage.getItem(STORAGE_KEY);
+        const expiresAt = parseInt(localStorage.getItem(STORAGE_EXPIRY_KEY) || '0', 10);
+        if (!token || !expiresAt) return { token: null, expiresAt: 0 };
+        if (Date.now() >= expiresAt) {
+          // Expired — clean it up
+          localStorage.removeItem(STORAGE_KEY);
+          localStorage.removeItem(STORAGE_EXPIRY_KEY);
+          return { token: null, expiresAt: 0 };
+        }
+        return { token, expiresAt };
+      } catch (e) {
+        return { token: null, expiresAt: 0 };
+      }
+    }
+
+    function writeStoredToken(token, expiresAt) {
+      try {
+        localStorage.setItem(STORAGE_KEY, token);
+        localStorage.setItem(STORAGE_EXPIRY_KEY, String(expiresAt));
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function clearStoredToken() {
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem(STORAGE_EXPIRY_KEY);
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    window.addEventListener('message', function(event) {
+      // Only respond to messages from our parent window
+      if (event.source !== window.parent) return;
+
+      const d = event.data;
+      if (!d || typeof d.type !== 'string') return;
+      if (d.type.indexOf('hr-portal:') !== 0) return;
+
+      const requestId = d.requestId || null;
+      const respond = (payload) => {
+        // Reply back to the same origin that sent us the message
+        event.source.postMessage(
+          Object.assign({ requestId }, payload),
+          event.origin
+        );
+      };
+
+      switch (d.type) {
+        case 'hr-portal:get-token': {
+          const { token, expiresAt } = readStoredToken();
+          respond({ type: 'hr-portal:token-response', token, expiresAt });
+          break;
+        }
+        case 'hr-portal:set-token': {
+          const ok = writeStoredToken(d.token, d.expiresAt);
+          respond({ type: 'hr-portal:set-token-ack', ok });
+          break;
+        }
+        case 'hr-portal:clear-token': {
+          const ok = clearStoredToken();
+          respond({ type: 'hr-portal:clear-token-ack', ok });
+          break;
+        }
+      }
+    });
+
+    // Announce to the parent that we're ready to receive storage requests.
+    // (The parent waits for this before sending any get-token query.)
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ type: 'hr-portal:ready' }, '*');
+    }
+
+    // ========================================================================
     // GIS init & callback
     // ========================================================================
     function handleCredentialResponse(response) {
@@ -157,14 +262,9 @@
         // Forward the RAW signed JWT to the parent (Apps Script).
         // The parent will validate it server-side via Google's tokeninfo endpoint.
         // We never trust or decode it here.
-        //
-        // Target origin: Apps Script iframes are served from *.googleusercontent.com.
-        // We target the parent regardless of subdomain — the parent will validate
-        // event.origin on its end. This is the standard pattern for cross-origin
-        // postMessage to a known-but-dynamic origin.
         if (window.parent && window.parent !== window) {
           window.parent.postMessage({
-            type: 'camp-hr-portal-signin',
+            type: 'hr-portal:signin-complete',
             credential: response.credential
           }, '*');
         } else {
