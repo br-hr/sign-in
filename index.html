@@ -40,13 +40,17 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       background: transparent;
       color: #1f2937;
-      overflow: hidden;
+      overflow: hidden !important;
+      height: 100%;
     }
+    /* Hide scrollbars even if something somehow forces them */
+    html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; width: 0; height: 0; }
+    html, body { scrollbar-width: none; -ms-overflow-style: none; }
+
     body {
       display: flex;
       align-items: center;
       justify-content: center;
-      min-height: 100vh;
     }
     .wrap {
       display: flex;
@@ -222,6 +226,8 @@
       if (!d || typeof d.type !== 'string') return;
       if (d.type.indexOf('hr-portal:') !== 0) return;
 
+      console.log('[hr-portal-relay] received:', d.type, 'from', event.origin);
+
       const requestId = d.requestId || null;
       const respond = (payload) => {
         // Reply back to the same origin that sent us the message
@@ -234,11 +240,13 @@
       switch (d.type) {
         case 'hr-portal:get-token': {
           const { token, expiresAt } = readStoredToken();
+          console.log('[hr-portal-relay] get-token →', token ? 'token-found' : 'no-token');
           respond({ type: 'hr-portal:token-response', token, expiresAt });
           break;
         }
         case 'hr-portal:set-token': {
           const ok = writeStoredToken(d.token, d.expiresAt);
+          console.log('[hr-portal-relay] set-token →', ok);
           respond({ type: 'hr-portal:set-token-ack', ok });
           break;
         }
@@ -253,6 +261,7 @@
     // Announce to the parent that we're ready to receive storage requests.
     // (The parent waits for this before sending any get-token query.)
     if (window.parent && window.parent !== window) {
+      console.log('[hr-portal-relay] sending ready signal to parent');
       window.parent.postMessage({ type: 'hr-portal:ready' }, '*');
     }
 
