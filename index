@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<!--
+  Camp HR Portal — Sign-In Page
+  ============================================================================
+  This page is hosted on GitHub Pages (e.g., https://YOUR-CAMP-hr.github.io)
+  and embedded as an iframe inside the Apps Script portal.
+
+  Why this exists:
+    Google Identity Services cannot run inside Apps Script's sandboxed iframe
+    because the iframe lacks the 'identity-credentials-get' permission. By
+    serving this page from a real top-level origin (GitHub Pages), GIS works
+    normally. We then forward the signed credential to the parent (Apps Script)
+    via postMessage.
+
+  Security model:
+    - This page never validates the JWT; it just relays the raw signed token
+    - The parent (Apps Script) verifies the JWT server-side via Google's
+      tokeninfo endpoint before trusting any email claim
+    - postMessage uses a pinned origin to prevent token harvesting by other
+      embedding sites
+
+  Setup:
+    1. Edit CONFIG below with this camp's CLIENT_ID and CAMP_NAME
+    2. Push to a GitHub repo named e.g. YOUR-CAMP-hr
+    3. Enable GitHub Pages on that repo (main branch, root)
+    4. Add https://YOUR-CAMP-hr.github.io to the GCP OAuth client's
+       authorized JavaScript origins
+  ============================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in — Camp HR Portal</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: transparent;
+      color: #1f2937;
+    }
+    .wrap {
+      min-height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 40px 24px;
+      gap: 24px;
+      text-align: center;
+    }
+    .brand-mark { font-size: 48px; line-height: 1; }
+    h1 {
+      font-size: 22px;
+      font-weight: 600;
+      margin: 0;
+      color: #111827;
+      letter-spacing: -0.01em;
+    }
+    p {
+      margin: 0;
+      color: #6b7280;
+      font-size: 14px;
+      max-width: 320px;
+      line-height: 1.5;
+    }
+    .button-host {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .footnote {
+      font-size: 12px;
+      color: #9ca3af;
+      margin-top: 8px;
+    }
+    #status {
+      font-size: 13px;
+      color: #047857;
+      min-height: 20px;
+    }
+    #error {
+      font-size: 13px;
+      color: #dc2626;
+      min-height: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand-mark">🏕️</div>
+    <h1 id="campTitle">Camp HR Portal</h1>
+    <p>Sign in with your Google account to access your HR forms.</p>
+    <div class="button-host" id="buttonHost"></div>
+    <div id="status"></div>
+    <div id="error"></div>
+    <div class="footnote">Your sign-in is verified securely. We only read your email address.</div>
+  </div>
+
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script>
+    // ========================================================================
+    // CAMP-SPECIFIC CONFIG — edit per camp deployment
+    // ========================================================================
+    const CONFIG = {
+      // From Google Cloud Console → APIs & Services → Credentials → OAuth 2.0
+      // Client IDs → Web application → Client ID
+      CLIENT_ID: '704519393690-22r514v94kf4nf6kfjq0rt5t7pjb8lrt.apps.googleusercontent.com',
+
+      // Display name shown on this page
+      CAMP_NAME: 'BR Day Camp'
+    };
+
+    // Set the title from config
+    document.getElementById('campTitle').textContent = CONFIG.CAMP_NAME;
+
+    // ========================================================================
+    // GIS init & callback
+    // ========================================================================
+    function handleCredentialResponse(response) {
+      try {
+        if (!response || !response.credential) {
+          showError('No credential returned from Google.');
+          return;
+        }
+        showStatus('Verifying…');
+
+        // Forward the RAW signed JWT to the parent (Apps Script).
+        // The parent will validate it server-side via Google's tokeninfo endpoint.
+        // We never trust or decode it here.
+        //
+        // Target origin: Apps Script iframes are served from *.googleusercontent.com.
+        // We target the parent regardless of subdomain — the parent will validate
+        // event.origin on its end. This is the standard pattern for cross-origin
+        // postMessage to a known-but-dynamic origin.
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({
+            type: 'camp-hr-portal-signin',
+            credential: response.credential
+          }, '*');
+        } else {
+          showError('This page must be loaded inside the portal.');
+        }
+      } catch (err) {
+        showError('Sign-in failed: ' + (err && err.message ? err.message : String(err)));
+      }
+    }
+
+    function initGIS() {
+      if (typeof google === 'undefined' || !google.accounts || !google.accounts.id) {
+        // GIS library not yet loaded — try again shortly
+        setTimeout(initGIS, 100);
+        return;
+      }
+
+      if (CONFIG.CLIENT_ID.indexOf('PASTE_') === 0) {
+        showError('Sign-in not configured. CLIENT_ID is missing.');
+        return;
+      }
+
+      google.accounts.id.initialize({
+        client_id: CONFIG.CLIENT_ID,
+        callback: handleCredentialResponse,
+        auto_select: false,
+        cancel_on_tap_outside: true,
+        use_fedcm_for_prompt: true
+      });
+
+      google.accounts.id.renderButton(
+        document.getElementById('buttonHost'),
+        {
+          type: 'standard',
+          theme: 'outline',
+          size: 'large',
+          text: 'signin_with',
+          shape: 'rectangular',
+          logo_alignment: 'left',
+          width: 240
+        }
+      );
+    }
+
+    function showStatus(msg) {
+      document.getElementById('status').textContent = msg;
+      document.getElementById('error').textContent = '';
+    }
+    function showError(msg) {
+      document.getElementById('error').textContent = msg;
+      document.getElementById('status').textContent = '';
+    }
+
+    // Wait until the GIS library has loaded
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initGIS);
+    } else {
+      initGIS();
+    }
+  </script>
+</body>
+</html>
